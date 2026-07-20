@@ -6,6 +6,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, symlink};
 use std::path::Path;
 
+use nix::errno::Errno;
 use nyth::error::OverlayError;
 use nyth::sys::overlay::{
     materialize_home_files, mount_overlay, provision_persistent_tmpfs, unmount_persistent_tmpfs,
@@ -13,12 +14,12 @@ use nyth::sys::overlay::{
 use nyth::sys::paths::NythPaths;
 
 /// A uid/gid that's neither root nor whatever nyth itself provisioned things as
-const FAKE_TARGET_UID: u32 = 6553;
-const FAKE_TARGET_GID: u32 = 6553;
+const FAKE_TARGET_UID: nix::unistd::Uid = nix::unistd::Uid::from_raw(6553);
+const FAKE_TARGET_GID: nix::unistd::Gid = nix::unistd::Gid::from_raw(6553);
 
 /// EPERM/EACCES on the very first root-only step (creating/mounting `/run/nyth/<name>`) means this process isn't running as real root - expected outside a CI container running as root
-fn is_permission_denied(errno: i32) -> bool {
-    errno == libc::EPERM || errno == libc::EACCES
+fn is_permission_denied(errno: Errno) -> bool {
+    errno == Errno::EPERM || errno == Errno::EACCES
 }
 
 fn umount_path(path: &Path) {
@@ -38,17 +39,19 @@ fn run_in_child() -> i32 {
     let paths = NythPaths::for_user(&name);
 
     if let Err(e) = provision_persistent_tmpfs(&paths, FAKE_TARGET_UID, FAKE_TARGET_GID) {
-        if let OverlayError::PersistentTmpfsFailed { errno } = e {
-            if is_permission_denied(errno) {
-                return 0;
-            }
+        if let OverlayError::PersistentTmpfsFailed { errno } = e
+            && is_permission_denied(errno)
+        {
+            return 0;
         }
         eprintln!("provision_persistent_tmpfs failed: {e:?}");
         return 1;
     }
 
     match fs::metadata(&paths.root) {
-        Ok(metadata) if metadata.uid() == FAKE_TARGET_UID && metadata.gid() == FAKE_TARGET_GID => {}
+        Ok(metadata)
+            if metadata.uid() == FAKE_TARGET_UID.as_raw()
+                && metadata.gid() == FAKE_TARGET_GID.as_raw() => {}
         Ok(metadata) => {
             eprintln!(
                 "paths.root not chowned to target user (uid={}, gid={})",
@@ -137,10 +140,10 @@ fn run_materialize_in_child() -> i32 {
     let paths = NythPaths::for_user(&name);
 
     if let Err(e) = provision_persistent_tmpfs(&paths, FAKE_TARGET_UID, FAKE_TARGET_GID) {
-        if let OverlayError::PersistentTmpfsFailed { errno } = e {
-            if is_permission_denied(errno) {
-                return 0;
-            }
+        if let OverlayError::PersistentTmpfsFailed { errno } = e
+            && is_permission_denied(errno)
+        {
+            return 0;
         }
         eprintln!("provision_persistent_tmpfs failed: {e:?}");
         return 1;
@@ -198,7 +201,9 @@ fn check_materialized_lower(lower: &Path) -> i32 {
             return 5;
         }
         Ok(metadata) => {
-            if metadata.uid() != FAKE_TARGET_UID || metadata.gid() != FAKE_TARGET_GID {
+            if metadata.uid() != FAKE_TARGET_UID.as_raw()
+                || metadata.gid() != FAKE_TARGET_GID.as_raw()
+            {
                 eprintln!(
                     "lower/.gitconfig not chowned to target user (uid={}, gid={})",
                     metadata.uid(),
@@ -232,7 +237,9 @@ fn check_materialized_lower(lower: &Path) -> i32 {
             return 10;
         }
         Ok(metadata) => {
-            if metadata.uid() != FAKE_TARGET_UID || metadata.gid() != FAKE_TARGET_GID {
+            if metadata.uid() != FAKE_TARGET_UID.as_raw()
+                || metadata.gid() != FAKE_TARGET_GID.as_raw()
+            {
                 eprintln!("lower/hypr not chowned to target user");
                 return 11;
             }

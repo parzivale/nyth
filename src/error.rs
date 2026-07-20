@@ -1,17 +1,17 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use nix::errno::Errno;
+
 #[derive(Debug)]
 pub enum IdentityError {
     /// `geteuid() != 0` - checked first, before any mount attempt
     NotRunningAsRoot,
     /// `getpwnam_r` for `--for-user <name>` found no entry.
-    UserNotFound {
-        name: String,
-    },
+    UserNotFound { name: String },
     HomeLookupFailed {
         name: String,
-        errno: i32,
+        errno: nix::errno::Errno,
     },
 }
 
@@ -39,13 +39,13 @@ impl std::error::Error for IdentityError {}
 pub enum OverlayError {
     AlreadyMounted { user: String },
     NotMounted { user: String },
-    PersistentTmpfsFailed { errno: i32 },
-    HomeSnapshotFailed { errno: i32 },
-    HomeFilesMaterializeFailed { path: PathBuf, errno: i32 },
-    OverlayApiUnsupported { errno: i32 },
-    MountFailed { target: PathBuf, errno: i32 },
-    UnmountFailed { target: PathBuf, errno: i32 },
-    OwnershipFailed { path: PathBuf, errno: i32 },
+    PersistentTmpfsFailed { errno: Errno },
+    HomeSnapshotFailed { errno: Errno },
+    HomeFilesMaterializeFailed { path: PathBuf, errno: Errno },
+    OverlayApiUnsupported { errno: Errno },
+    MountFailed { target: PathBuf, errno: Errno },
+    UnmountFailed { target: PathBuf, errno: Errno },
+    OwnershipFailed { path: PathBuf, errno: Errno },
     StateCheckFailed { message: String },
 }
 

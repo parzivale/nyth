@@ -137,9 +137,9 @@ pub fn parse_repo_args(args: &[String]) -> Result<RepoArgs, RepoArgsError> {
     while let Some(arg) = remaining.next() {
         match arg.as_str() {
             "--for-user" => {
-                let raw = remaining.next().ok_or(RepoArgsError::MissingFlagValue {
-                    flag: "--for-user",
-                })?;
+                let raw = remaining
+                    .next()
+                    .ok_or(RepoArgsError::MissingFlagValue { flag: "--for-user" })?;
                 for_user = Some(raw.clone());
             }
             "--repo-root" => {

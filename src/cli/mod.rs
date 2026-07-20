@@ -13,8 +13,6 @@ use mount::{parse_mount_args, run_mount};
 use status::{PendingChange, RepoArgs, parse_repo_args, status};
 use unmount::{parse_unmount_args, run_unmount};
 
-use crate::sys::identity::TargetIdentity;
-
 /// Dispatches on `args[1]` (the subcommand). `args[0]` is the program name,
 /// same convention as `std::env::args()`, so callers can pass that straight
 /// through without stripping anything first.
@@ -113,20 +111,17 @@ fn run_status(args: &[String]) -> ExitCode {
 
 /// `Generated` changes are diffed against the target user's *live* $HOME (what Home Manager currently has active there), not the repo
 fn print_generated_change(repo_args: &RepoArgs, relative_path: &Path) {
-    let home = match TargetIdentity::from_username(&repo_args.for_user) {
-        Ok(identity) => identity.home,
-        Err(_) => {
-            println!(
-                "Generated {{ relative_path: {relative_path:?} }} (couldn't resolve identity, showing raw path only)"
-            );
-            return;
-        }
-    };
-    let upper = repo_args.paths().upper;
+    if let Ok(Some(user)) = nix::unistd::User::from_name(&repo_args.for_user) {
+        let upper = repo_args.paths().upper;
 
-    match read_generated_change(&home, &upper, relative_path) {
-        Ok(change) => print!("{}", render_generated_change(&change)),
-        Err(e) => println!("Generated {{ relative_path: {relative_path:?} }} ({e})"),
+        match read_generated_change(&user.dir, &upper, relative_path) {
+            Ok(change) => print!("{}", render_generated_change(&change)),
+            Err(e) => println!("Generated {{ relative_path: {relative_path:?} }} ({e})"),
+        }
+    } else {
+        println!(
+            "Generated {{ relative_path: {relative_path:?} }} (couldn't resolve identity, showing raw path only)"
+        );
     }
 }
 

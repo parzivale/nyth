@@ -1,8 +1,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::error::{NythError, OverlayError};
-use crate::sys::identity::{TargetIdentity, require_real_root};
+use crate::error::{IdentityError, NythError, OverlayError};
 use crate::sys::overlay::{
     OverlayState, current_overlay_state, materialize_home_files, mount_home_snapshot,
     mount_overlay, provision_persistent_tmpfs, set_ownership,
@@ -76,10 +75,23 @@ pub fn parse_mount_args(args: &[String]) -> Result<MountArgs, MountArgsError> {
 
 /// `nyth mount`: checks `geteuid() == 0`, resolves the target's identity, provisions `/run/nyth/<name>/`, snapshots the target's real $HOME read-only, resolves watched-paths into `lower/`, and mounts the overlay over the target's $HOME
 pub fn run_mount(args: &MountArgs) -> Result<(), NythError> {
-    require_real_root().map_err(NythError::Identity)?;
-    let identity = TargetIdentity::from_username(&args.for_user).map_err(NythError::Identity)?;
+    nix::unistd::geteuid()
+        .is_root()
+        .then_some(())
+        .ok_or(NythError::Identity(IdentityError::NotRunningAsRoot))?;
 
-    let already_mounted = current_overlay_state(&identity.home).map_err(NythError::Overlay)?;
+    let identity = nix::unistd::User::from_name(&args.for_user)
+        .map_err(|err| {
+            NythError::Identity(IdentityError::HomeLookupFailed {
+                name: args.for_user.to_owned(),
+                errno: err,
+            })
+        })?
+        .ok_or(NythError::Identity(IdentityError::UserNotFound {
+            name: args.for_user.to_owned(),
+        }))?;
+
+    let already_mounted = current_overlay_state(&identity.dir).map_err(NythError::Overlay)?;
     if already_mounted == OverlayState::Mounted {
         return Err(NythError::Overlay(OverlayError::AlreadyMounted {
             user: args.for_user.clone(),
@@ -89,7 +101,7 @@ pub fn run_mount(args: &MountArgs) -> Result<(), NythError> {
     let paths = NythPaths::for_user(&args.for_user);
 
     provision_persistent_tmpfs(&paths, identity.uid, identity.gid).map_err(NythError::Overlay)?;
-    mount_home_snapshot(&identity.home, &paths).map_err(NythError::Overlay)?;
+    mount_home_snapshot(&identity.dir, &paths).map_err(NythError::Overlay)?;
     materialize_home_files(&paths, &args.home_files, identity.uid, identity.gid)
         .map_err(NythError::Overlay)?;
 
@@ -97,5 +109,5 @@ pub fn run_mount(args: &MountArgs) -> Result<(), NythError> {
     set_ownership(&paths.upper, identity.uid, identity.gid).map_err(NythError::Overlay)?;
     set_ownership(&paths.work, identity.uid, identity.gid).map_err(NythError::Overlay)?;
 
-    mount_overlay(&paths, &identity.home).map_err(NythError::Overlay)
+    mount_overlay(&paths, &identity.dir).map_err(NythError::Overlay)
 }

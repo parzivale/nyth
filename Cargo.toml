@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-libc = "0.2"
+nix = { version = "0.31.3", features = ["user"] }
 rustix = { version = "1", features = ["mount", "fs", "process"] }
 
 [profile.release]
@@ -13,3 +13,6 @@ codegen-units = 1
 strip = true
 opt-level = "z"
 panic = "abort"
+
+[dev-dependencies]
+libc = "0.2.186"

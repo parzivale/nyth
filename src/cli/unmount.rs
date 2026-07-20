@@ -1,7 +1,6 @@
 use std::fmt;
 
-use crate::error::{NythError, OverlayError};
-use crate::sys::identity::{TargetIdentity, require_real_root};
+use crate::error::{IdentityError, NythError, OverlayError};
 use crate::sys::overlay::{
     OverlayState, current_overlay_state, unmount_overlay_and_snapshot, unmount_persistent_tmpfs,
 };
@@ -68,10 +67,23 @@ pub fn parse_unmount_args(args: &[String]) -> Result<UnmountArgs, UnmountArgsErr
 /// `nyth unmount`: unmounts the overlay and the read-only home snapshot for the target user.
 /// `upper`/`work` are left in place unless `--purge` is given
 pub fn run_unmount(args: &UnmountArgs) -> Result<(), NythError> {
-    require_real_root().map_err(NythError::Identity)?;
-    let identity = TargetIdentity::from_username(&args.for_user).map_err(NythError::Identity)?;
+    nix::unistd::geteuid()
+        .is_root()
+        .then_some(())
+        .ok_or(NythError::Identity(IdentityError::NotRunningAsRoot))?;
 
-    let state = current_overlay_state(&identity.home).map_err(NythError::Overlay)?;
+    let identity = nix::unistd::User::from_name(&args.for_user)
+        .map_err(|err| {
+            NythError::Identity(IdentityError::HomeLookupFailed {
+                name: args.for_user.to_owned(),
+                errno: err,
+            })
+        })?
+        .ok_or(NythError::Identity(IdentityError::UserNotFound {
+            name: args.for_user.to_owned(),
+        }))?;
+
+    let state = current_overlay_state(&identity.dir).map_err(NythError::Overlay)?;
     if state == OverlayState::NotMounted {
         return Err(NythError::Overlay(OverlayError::NotMounted {
             user: args.for_user.clone(),
@@ -80,7 +92,7 @@ pub fn run_unmount(args: &UnmountArgs) -> Result<(), NythError> {
 
     let paths = NythPaths::for_user(&args.for_user);
 
-    unmount_overlay_and_snapshot(&identity.home, &paths).map_err(NythError::Overlay)?;
+    unmount_overlay_and_snapshot(&identity.dir, &paths).map_err(NythError::Overlay)?;
 
     if args.purge {
         unmount_persistent_tmpfs(&paths).map_err(NythError::Overlay)?;
