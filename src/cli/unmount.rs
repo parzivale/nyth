@@ -41,15 +41,14 @@ pub fn parse_unmount_args(args: &[String]) -> eros::Result<UnmountArgs> {
     Ok(UnmountArgs { for_user, purge })
 }
 
-/// `nyth unmount`: unmounts the overlay and the read-only home snapshot for the target user.
-/// `upper`/`work` are left in place unless `--purge` is given
+/// `nyth unmount`: unmounts overlay and home snapshot. Keeps `upper`/`work` unless `--purge`.
 pub fn run_unmount(args: &UnmountArgs) -> eros::Result<()> {
     ensure!(
         nix::unistd::geteuid().is_root(),
         "nyth must run as root: mount/unmount act on another user's $HOME and need CAP_SYS_ADMIN on the host, there is no user namespace to fall back to"
     );
 
-    // `Err` is the passwd lookup itself failing, `Ok(None)` is it succeeding for a user that doesn't exist
+    // `Err` = lookup failed, `Ok(None)` = user doesn't exist
     let identity = nix::unistd::User::from_name(&args.for_user)
         .with_context(|| format!("looking up the passwd entry for '{}'", args.for_user))?
         .ok_or_else(|| eros::error!("no passwd entry found for user '{}'", args.for_user))?;

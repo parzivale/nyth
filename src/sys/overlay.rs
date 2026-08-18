@@ -27,9 +27,7 @@ pub enum OverlayState {
     NotMounted,
 }
 
-/// The kernel won't give us an overlay filesystem at all, as opposed to this
-/// particular mount failing. Its own type, and carrying its own explanation,
-/// because it's the one failure in here the user can actually act on.
+/// Kernel can't give us an overlay filesystem at all (vs. this particular mount failing).
 #[derive(Debug)]
 pub struct OverlayUnsupported {
     pub errno: Errno,
@@ -64,7 +62,7 @@ pub fn current_overlay_state(home: &Path) -> eros::Result<OverlayState, (io::Err
     Ok(OverlayState::NotMounted)
 }
 
-/// Sets up `/run/nyth/<name>/` as a persistent tmpfs, owned end-to-end by the target user, with the 4 subdirectories underneath it
+/// Sets up `/run/nyth/<name>/` as a persistent tmpfs owned by the target user, with its 4 subdirs
 pub fn provision_persistent_tmpfs(
     paths: &NythPaths,
     uid: Uid,
@@ -87,7 +85,7 @@ pub fn provision_persistent_tmpfs(
 
 #[context("creating {}", root.display())]
 fn create_root_dir(root: &Path) -> eros::Result<(), (io::Error,)> {
-    // `/run/nyth` doesn't necessarily exist yet - recursive() so this doesn't fail with ENOENT the first time it runs on a given machine
+    // `/run/nyth` may not exist yet; recursive() avoids ENOENT on first run
     if let Err(e) = fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -140,7 +138,7 @@ fn bind_mount(source: &Path, target: &Path) -> Result<(), Errno> {
 }
 
 // Two-step bind+remount (MS_RDONLY ignored on initial MS_BIND).
-// Flags repeated on both calls: if source's host mount already has them locked (e.g. /tmp nosuid,nodev), omitting them here gets EPERM (mount_namespaces(7))
+// Flags repeated on both calls, or a locked host mount (e.g. /tmp nosuid) gets EPERM.
 fn remount_readonly(target: &Path) -> Result<(), Errno> {
     // mount_remount adds MS_REMOUNT itself, leaving MS_BIND | MS_NOSUID | MS_NODEV here
     mount_remount(
@@ -150,7 +148,7 @@ fn remount_readonly(target: &Path) -> Result<(), Errno> {
     )
 }
 
-/// Copies Home Manager's fully-merged `home-files` derivation (the same `$out` HM itself would symlink into `$HOME`
+/// Copies Home Manager's merged `home-files` derivation (what it would symlink into `$HOME`).
 #[context("materializing the home-files tree from {} into {}", home_files.display(), paths.lower.display())]
 pub fn materialize_home_files(
     paths: &NythPaths,
@@ -274,7 +272,7 @@ fn unmount_one(target: &Path) -> eros::Result<(), (Errno,)> {
     Ok(())
 }
 
-/// `chown`s `path` to `uid`/`gid`. `upper`/`work` are created by root but need to be writable by the target user's own processes running inside the overlay
+/// `chown`s `path`: `upper`/`work` are created by root but must be writable by the target user
 #[context("setting ownership of {}", path.display())]
 pub fn set_ownership(path: &Path, uid: Uid, gid: Gid) -> eros::Result<(), (Errno,)> {
     let owner = rustix::fs::Uid::from_raw(uid.as_raw());

@@ -55,14 +55,14 @@ pub fn parse_mount_args(args: &[String]) -> eros::Result<MountArgs> {
     })
 }
 
-/// `nyth mount`: checks `geteuid() == 0`, resolves the target's identity, provisions `/run/nyth/<name>/`, snapshots the target's real $HOME read-only, materializes home-files into `lower/`, and mounts the overlay over the target's $HOME
+/// `nyth mount`: provisions `/run/nyth/<name>/`, snapshots $HOME, materializes home-files, mounts overlay.
 pub fn run_mount(args: &MountArgs) -> eros::Result<()> {
     ensure!(
         nix::unistd::geteuid().is_root(),
         "nyth must run as root: mount/unmount act on another user's $HOME and need CAP_SYS_ADMIN on the host, there is no user namespace to fall back to"
     );
 
-    // `Err` is the passwd lookup itself failing, `Ok(None)` is it succeeding for a user that doesn't exist
+    // `Err` = lookup failed, `Ok(None)` = user doesn't exist
     let identity = nix::unistd::User::from_name(&args.for_user)
         .with_context(|| format!("looking up the passwd entry for '{}'", args.for_user))?
         .ok_or_else(|| eros::error!("no passwd entry found for user '{}'", args.for_user))?;
@@ -73,9 +73,7 @@ pub fn run_mount(args: &MountArgs) -> eros::Result<()> {
 
     let paths = NythPaths::for_user(&args.for_user);
 
-    // One user-facing summary per step. The per-syscall detail underneath stays in
-    // `#[context]`, which is diagnostics-only, so a failure names the step that failed
-    // without unrolling the whole call tree at the user
+    // One user-facing summary per step; per-syscall detail stays in `#[context]`
     provision_persistent_tmpfs(&paths, identity.uid, identity.gid)
         .with_user_context(|| format!("provisioning {}", paths.root.display()))?;
     mount_home_snapshot(&identity.dir, &paths)
@@ -83,7 +81,7 @@ pub fn run_mount(args: &MountArgs) -> eros::Result<()> {
     materialize_home_files(&paths, &args.home_files, identity.uid, identity.gid)
         .with_user_context(|| format!("materializing home-files from {}", args.home_files.display()))?;
 
-    // upper/work are created by root; the target user's own processes running inside the overlay need to be able to write to them
+    // upper/work are created by root, but must be writable by the target user
     set_ownership(&paths.upper, identity.uid, identity.gid)
         .with_user_context(|| format!("handing upper/work to '{}'", args.for_user))?;
     set_ownership(&paths.work, identity.uid, identity.gid)

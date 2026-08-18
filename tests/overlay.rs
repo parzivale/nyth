@@ -16,10 +16,8 @@ use nyth::sys::paths::NythPaths;
 const FAKE_TARGET_UID: nix::unistd::Uid = nix::unistd::Uid::from_raw(6553);
 const FAKE_TARGET_GID: nix::unistd::Gid = nix::unistd::Gid::from_raw(6553);
 
-/// EPERM/EACCES on the very first root-only step (creating/mounting `/run/nyth/<name>`) means this process isn't running as real root - expected outside a CI container running as root.
-///
-/// The step can fail as either a `std::io::Error` (the mkdir) or a rustix errno
-/// (the mount), so both arms of the union get checked rather than one.
+/// True if EPERM/EACCES: this process isn't running as real root.
+/// Checks both `io::Error` (mkdir) and rustix errno (mount) arms.
 fn is_permission_denied<E: TypeSet>(e: &ErrorUnion<E>) -> bool {
     e.downcast_inner_ref::<rustix::io::Errno>()
         .is_some_and(|errno| {
@@ -152,7 +150,7 @@ fn run_materialize_in_child() -> i32 {
         return 1;
     }
 
-    // Stands in for home-manager's real `home-files` derivation output: a directory, owned by root like everything in /nix/store, containing a real file and a subdirectory reached only through a symlink
+    // Fake `home-files`: a dir with a real file and a subdir reached via symlink
     let fake_home_files = paths.root.join("fake-home-files");
     let fake_store_dir = paths.root.join("fake-store-dir");
     if fs::create_dir_all(&fake_home_files).is_err() || fs::create_dir_all(&fake_store_dir).is_err()
@@ -196,7 +194,7 @@ fn run_materialize_in_child() -> i32 {
 }
 
 fn check_materialized_lower(lower: &Path) -> i32 {
-    // Not a bind mount / not a symlink - real content copied in, owned by the target user.
+    // Real content copied in, owned by the target user, not a bind mount or symlink.
     let file_entry = lower.join(".gitconfig");
     match fs::symlink_metadata(&file_entry) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -232,7 +230,7 @@ fn check_materialized_lower(lower: &Path) -> i32 {
         }
     }
 
-    // The directory reached only via a symlink in the source must also come through as real content, owned by the target user, not empty and not still a symlink.
+    // A dir reached only via symlink in the source must come through as real content too.
     let nested_entry = lower.join("hypr").join("hyprland.conf");
     match fs::symlink_metadata(lower.join("hypr")) {
         Ok(metadata) if metadata.file_type().is_symlink() => {

@@ -33,7 +33,7 @@ fn diff_marks_repo_backed_paths_as_repo_backed() {
     );
 }
 
-// A file changed inside a directory watched-path still counts as that watched-path, even though its path isn't literally equal to the watched-path itself
+// Nested file under a watched dir still counts as that watched path
 #[test]
 fn diff_marks_nested_file_under_directory_watched_path_as_repo_backed() {
     let repo = repo_backed_only(PathBuf::from("/unused"), vec![watched(".config/hypr")]);
@@ -51,7 +51,7 @@ fn diff_marks_nested_file_under_directory_watched_path_as_repo_backed() {
     );
 }
 
-// The core case this type exists for: a path Home Manager watches, but that has no source file in the repo because it's rendered by a programs.* module
+// Watched but rendered by a programs.* module: no repo source file
 #[test]
 fn diff_marks_generated_paths_as_generated_not_repo_backed() {
     let repo = DotfilesRepo::new(

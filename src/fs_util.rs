@@ -4,12 +4,8 @@ use std::path::Path;
 
 use eros::context;
 
-/// Copies a single file to `destination`, creating its parent dirs first.
-/// Symlinks are recreated as symlinks, not dereferenced: `fs::copy()` on a
-/// symlink would follow it and copy the target's content under the link's
-/// name, silently changing what kind of file ends up at the destination.
-///
-/// Used by `commit` (upper -> repo): copy one file, preserve its symlink-ness
+/// Copies a single file to `destination`, creating parent dirs first.
+/// Symlinks are recreated as symlinks, not dereferenced (unlike `fs::copy()`).
 #[context("copying {} to {}", source.display(), destination.display())]
 pub fn copy_file_preserving_symlinks(
     source: &Path,

@@ -21,9 +21,7 @@ pub struct CommitReport {
     pub applied: Vec<PathBuf>,
 }
 
-/// A change that was refused outright, as opposed to one that failed while being applied.
-/// Carries the path and the reason itself, so callers that `narrow()` it back out of
-/// `apply_commit` have the whole story without any attached context.
+/// A change refused outright, as opposed to one that failed while being applied.
 #[derive(Debug)]
 pub enum NotCommittable {
     /// Rendered by a `programs.*` module from Nix options; no source file in the repo to write to
@@ -37,7 +35,7 @@ impl fmt::Display for NotCommittable {
         match self {
             Self::Generated { path } => write!(
                 f,
-                "{} is rendered by a programs.* module, not backed by a repo file — nothing to commit it to",
+                "{} is rendered by a programs.* module, not backed by a repo file: nothing to commit it to",
                 path.display()
             ),
             Self::Untracked { path } => write!(
@@ -72,8 +70,7 @@ pub fn select_changes_to_apply(
         .collect()
 }
 
-/// Builds identity-scoped paths and the repo from `--for-user`/`--repo-*` args, then commits
-/// Thin wrapper around `commit_into`.
+/// Builds identity-scoped paths and the repo from args, then commits.
 pub fn commit(args: &RepoArgs) -> eros::Result<CommitReport> {
     let paths = args.paths();
     let repo = args.clone().into_repo();
@@ -87,11 +84,8 @@ pub fn commit_into(repo: &DotfilesRepo, paths: &NythPaths) -> eros::Result<Commi
     Ok(apply_commit(&selected, paths, repo)?)
 }
 
-/// Writes each already-selected change back to the repo, at the same $HOME-relative path it changed at: the repo mirrors $HOME under `repo.root`
-///
-/// `NotCommittable` stays a separate arm of the union rather than being erased, because
-/// callers that pass an unfiltered list (`select_changes_to_apply` filters these out) can
-/// `narrow()` it out and skip those paths instead of failing the whole run.
+/// Writes each selected change back to the repo at its $HOME-relative path.
+/// `NotCommittable` stays its own arm so callers can `narrow()` it out instead of failing.
 pub fn apply_commit(
     selected: &[PendingChange],
     paths: &NythPaths,

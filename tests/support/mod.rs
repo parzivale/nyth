@@ -3,9 +3,8 @@ use std::path::PathBuf;
 
 use nyth::sys::paths::NythPaths;
 
-/// A throwaway directory under /tmp, torn down when it goes out of scope
-/// (even on panic, unlike a manual `remove_dir_all` at the end of a test).
-/// For tests that need plain file I/O (commit/status) with no mounting involved
+/// A throwaway /tmp dir, torn down on drop (even on panic).
+/// For tests needing plain file I/O with no mounting involved.
 #[allow(dead_code)]
 pub struct Workspace {
     pub root: PathBuf,
@@ -13,11 +12,7 @@ pub struct Workspace {
 
 #[allow(dead_code)]
 impl Workspace {
-    /// `name` only has to be unique within one test *binary* (commit.rs,
-    /// status.rs, etc. are separate processes, so reusing a name across
-    /// binaries is fine); it has to be unique among tests that run
-    /// concurrently in the same binary, since cargo test runs `#[test]`s in
-    /// parallel threads of the same process.
+    /// `name` must be unique among tests running concurrently in this binary.
     pub fn new(name: &str) -> Self {
         let root = std::env::temp_dir().join(format!("nyth-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -31,7 +26,7 @@ impl Workspace {
         fs::write(path, contents).expect("write workspace file");
     }
 
-    /// A full `NythPaths` layout rooted in this workspace, for tests exercising `commit_into`/`nyth_status`, which need `upper`/`work` too
+    /// Full `NythPaths` layout rooted in this workspace, with `upper`/`work` too.
     pub fn paths(&self) -> NythPaths {
         let root = self.root.join("state");
         NythPaths {
@@ -50,15 +45,9 @@ impl Drop for Workspace {
     }
 }
 
-/// Forks, runs `child_fn` in the child (must return an exit code, 0 meaning
-/// success), and asserts the child exited with code 0.
-///
-/// Used by tests that need a fresh, single-threaded process to safely call
-/// root-only syscalls (mount/unmount/chown) without disturbing the rest of
-/// the test harness.
-///
-/// `child_fn` never returns to the caller on the success path: the child
-/// exits from inside this function, not back in the test.
+/// Forks and runs `child_fn` in the child, asserting it exits with code 0.
+/// For tests needing a fresh process for root-only syscalls (mount/chown).
+/// `child_fn` exits from inside this function; it never returns on success.
 pub fn run_in_fork(child_fn: impl FnOnce() -> i32) {
     match unsafe { libc::fork() } {
         -1 => panic!("fork failed"),

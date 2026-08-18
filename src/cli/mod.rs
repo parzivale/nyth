@@ -16,20 +16,13 @@ use mount::{parse_mount_args, run_mount};
 use status::{PendingChange, RepoArgs, parse_repo_args, status};
 use unmount::{parse_unmount_args, run_unmount};
 
-/// Honours the `NO_COLOR` convention, and stays plain when stderr is redirected
-/// somewhere that isn't a terminal (a log file, a Nix build sandbox, a pipe).
+/// Honours `NO_COLOR`, and stays plain when stderr isn't a terminal.
 fn use_color() -> bool {
     std::env::var_os("NO_COLOR").is_none() && io::stderr().is_terminal()
 }
 
 /// Prints a failed run to stderr as a `Caused by:` chain.
-///
-/// `user_contexts()` is the only public accessor for context on an `ErrorUnion` —
-/// plain `.context()`/`#[context]` entries are reachable only through `Debug`. So the
-/// per-syscall trail stays out of the way here, and `{e:?}` still has it in full.
-///
-/// The root error is always the last link: nyth runs as root, and the errno is the
-/// actionable half of a failed mount. The context above it supplies the path it lacks.
+/// Uses `user_contexts()` (not `.context()`, which is Debug-only), root error last.
 fn report(prefix: &str, e: &ErrorUnion<AnyError>) {
     let (red, dim, off) = if use_color() {
         ("\x1b[1;31m", "\x1b[2m", "\x1b[0m")
@@ -37,8 +30,7 @@ fn report(prefix: &str, e: &ErrorUnion<AnyError>) {
         ("", "", "")
     };
 
-    // eros pushes context as the error travels up, so the innermost sits first;
-    // a `Caused by:` chain reads the other way, outermost down to the root error
+    // eros pushes innermost context first; `Caused by:` reads outermost to root
     let mut causes: Vec<String> = e.user_contexts().map(ToString::to_string).collect();
     causes.reverse();
     causes.push(e.to_string());
@@ -50,9 +42,7 @@ fn report(prefix: &str, e: &ErrorUnion<AnyError>) {
     }
 }
 
-/// Dispatches on `args[1]` (the subcommand). `args[0]` is the program name,
-/// same convention as `std::env::args()`, so callers can pass that straight
-/// through without stripping anything first.
+/// Dispatches on `args[1]` (the subcommand); `args[0]` is the program name.
 pub fn run(args: &[String]) -> ExitCode {
     match args.get(1).map(String::as_str) {
         Some("mount") => run_mount_cmd(&args[2..]),
@@ -146,7 +136,7 @@ fn run_status(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `Generated` changes are diffed against the target user's *live* $HOME (what Home Manager currently has active there), not the repo
+/// `Generated` changes are diffed against the live $HOME, not the repo.
 fn print_generated_change(repo_args: &RepoArgs, relative_path: &Path) {
     if let Ok(Some(user)) = nix::unistd::User::from_name(&repo_args.for_user) {
         let upper = repo_args.paths().upper;

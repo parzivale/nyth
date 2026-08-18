@@ -42,7 +42,7 @@ fn commit_ignores_untracked_files() {
     assert!(report.applied.is_empty());
 }
 
-// The behavior this whole change exists for: a generated config (programs.* rendered) must never be silently written into the repo at a path that doesn't correspond to anything there
+// Generated configs must never be silently written into the repo at a nonexistent path
 #[test]
 fn commit_never_writes_generated_configs_anywhere() {
     let ws = Workspace::new("generated");

@@ -1,10 +1,10 @@
-# Home Manager module for nyth. Takes `self` so `programs.nyth.package` can default to this flake's own package
+# Home Manager module for nyth. Takes `self` for the default package.
 { self }:
 { config, lib, pkgs, ... }:
 let
   cfg = config.programs.nyth;
 
-  # Home Manager already has to know this list to generate the $HOME symlinks in the first place
+  # HM already needs this list for the $HOME symlinks
   allFiles = config.home.file;
 
   walkRecursiveSource = source: prefix:
@@ -76,7 +76,7 @@ let
 in
 {
   options.programs.nyth = {
-    enable = lib.mkEnableOption "write-through OverlayFS nad $HOME zarządzanym przez Home Managera";
+    enable = lib.mkEnableOption "write-through OverlayFS over the Home Manager-managed $HOME";
 
     package = lib.mkOption {
       type = lib.types.package;
@@ -88,8 +88,8 @@ in
     dotfilesRepo = lib.mkOption {
       type = lib.types.str;
       description = ''
-        Absolute path to the local, on-disk checkout of your flake's dotfiles repo where `nyth commit` writes repo-backed changes back to.
-        Nyth has no way to derive this from the flake evaluation itself, since that only ever sees paths already copied into the store.
+        Absolute path to the local checkout of your dotfiles repo, where `nyth commit` writes changes back to.
+        Can't be derived from the flake eval itself (it only sees store paths).
       '';
       example = "/home/user/nixos-config";
     };

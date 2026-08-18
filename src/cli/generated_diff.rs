@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use eros::context;
 
-/// One line-level difference in a Generated config. Doesn't claim to know which Nix option a line maps to
+/// One line-level difference in a Generated config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LineDiff {
     Added(String),
@@ -18,7 +18,7 @@ pub struct GeneratedChange {
     pub lines: Vec<LineDiff>,
 }
 
-/// Pure: diffs `before` (what Home Manager currently has active) against `after` (upper).
+/// Pure: diffs `before` (currently active) against `after` (upper).
 pub fn diff_generated_config(before: &str, after: &str) -> Vec<LineDiff> {
     let before_lines: Vec<&str> = before.lines().collect();
     let after_lines: Vec<&str> = after.lines().collect();
@@ -31,7 +31,7 @@ enum RawOp<'a> {
     Added(&'a str),
 }
 
-// LCS-table line diff, O(before.len() * after.len()) - fine for dotfiles-sized configs.
+// LCS-table line diff, O(n*m) - fine for dotfiles-sized configs.
 fn line_diff_ops<'a>(before: &[&'a str], after: &[&'a str]) -> Vec<RawOp<'a>> {
     let (n, m) = (before.len(), after.len());
     let mut lcs = vec![vec![0usize; m + 1]; n + 1];
@@ -98,7 +98,7 @@ fn pair_adjacent_replacements(ops: Vec<RawOp<'_>>) -> Vec<LineDiff> {
     out
 }
 
-/// Effect: reads both files, diffs them
+/// Reads both files, diffs them.
 pub fn read_generated_change(
     before_root: &Path,
     upper_root: &Path,
@@ -113,7 +113,7 @@ pub fn read_generated_change(
     })
 }
 
-// A missing file on one side is a real "every line added" diff, not a read error
+// Missing file = empty content, not a read error
 #[context("reading {}", path.display())]
 fn read_to_string_or_empty(path: &Path) -> eros::Result<String, (io::Error,)> {
     match fs::read_to_string(path) {
@@ -123,7 +123,7 @@ fn read_to_string_or_empty(path: &Path) -> eros::Result<String, (io::Error,)> {
     }
 }
 
-/// Plain before/now framing, not a unified diff. Doesn't guess the Nix option name
+/// Plain before/now framing, not a unified diff.
 pub fn render_generated_change(change: &GeneratedChange) -> String {
     let mut out = format!(
         "~/{} is rendered by a programs.* module in your Home Manager config.\n\
@@ -145,7 +145,7 @@ pub fn render_generated_change(change: &GeneratedChange) -> String {
     }
 
     out.push_str(
-        "\nnyth doesn't know which Nix option this maps to — check the programs.*\n\
+        "\nnyth doesn't know which Nix option this maps to: check the programs.*\n\
          options for whichever program owns this file.\n",
     );
     out

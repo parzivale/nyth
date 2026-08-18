@@ -1,5 +1,5 @@
 {
-  description = "nyth — write-through OverlayFS runtime for Home Manager";
+  description = "nyth: write-through OverlayFS runtime for Home Manager";
 
   inputs = {
     nixpkgs.url = "nixpkgs";
@@ -24,10 +24,7 @@
 
             cargoLock.lockFile = ./Cargo.lock;
 
-            # The test suite forks and mounts real overlayfs/tmpfs, which needs CAP_SYS_ADMIN
-            # on the host mount namespace -- the Nix build sandbox has neither that nor a
-            # writable /run, so most of it self-skips there anyway. Left off for the package
-            # build regardless, same as before.
+            # Test suite needs CAP_SYS_ADMIN for real mounts; sandbox has none.
             doCheck = false;
 
             meta = {
