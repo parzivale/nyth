@@ -1,7 +1,7 @@
-use std::fmt;
 use std::path::PathBuf;
 
-use crate::error::{IdentityError, NythError, OverlayError};
+use eros::{Context, bail, ensure};
+
 use crate::sys::overlay::{
     OverlayState, current_overlay_state, materialize_home_files, mount_home_snapshot,
     mount_overlay, provision_persistent_tmpfs, set_ownership,
@@ -15,32 +15,8 @@ pub struct MountArgs {
     pub home_files: PathBuf,
 }
 
-#[derive(Debug)]
-pub enum MountArgsError {
-    MissingFlagValue { flag: &'static str },
-    MissingForUser,
-    MissingHomeFiles,
-    UnexpectedArgument { raw: String },
-}
-
-impl fmt::Display for MountArgsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingFlagValue { flag } => write!(f, "{flag} requires a value"),
-            Self::MissingForUser => write!(f, "--for-user <name> is required"),
-            Self::MissingHomeFiles => write!(f, "--home-files <path> is required"),
-            Self::UnexpectedArgument { raw } => write!(
-                f,
-                "unexpected argument '{raw}', expected --for-user or --home-files"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for MountArgsError {}
-
-/// Parses `nyth mount --for-user <name> [--watched-path <rel>]...`
-pub fn parse_mount_args(args: &[String]) -> Result<MountArgs, MountArgsError> {
+/// Parses `nyth mount --for-user <name> --home-files <path>`
+pub fn parse_mount_args(args: &[String]) -> eros::Result<MountArgs> {
     let mut for_user = None;
     let mut home_files = None;
     let mut remaining = args.iter();
@@ -48,66 +24,72 @@ pub fn parse_mount_args(args: &[String]) -> Result<MountArgs, MountArgsError> {
     while let Some(arg) = remaining.next() {
         match arg.as_str() {
             "--for-user" => {
-                let raw = remaining
-                    .next()
-                    .ok_or(MountArgsError::MissingFlagValue { flag: "--for-user" })?;
+                let Some(raw) = remaining.next() else {
+                    bail!("--for-user requires a value");
+                };
                 for_user = Some(raw.clone());
             }
             "--home-files" => {
-                let raw = remaining.next().ok_or(MountArgsError::MissingFlagValue {
-                    flag: "--home-files",
-                })?;
+                let Some(raw) = remaining.next() else {
+                    bail!("--home-files requires a value");
+                };
                 home_files = Some(PathBuf::from(raw));
             }
-            other => {
-                return Err(MountArgsError::UnexpectedArgument {
-                    raw: other.to_string(),
-                });
-            }
+            other => bail!(
+                "unexpected argument '{}', expected --for-user or --home-files",
+                other
+            ),
         }
     }
 
+    let Some(for_user) = for_user else {
+        bail!("--for-user <name> is required");
+    };
+    let Some(home_files) = home_files else {
+        bail!("--home-files <path> is required");
+    };
+
     Ok(MountArgs {
-        for_user: for_user.ok_or(MountArgsError::MissingForUser)?,
-        home_files: home_files.ok_or(MountArgsError::MissingHomeFiles)?,
+        for_user,
+        home_files,
     })
 }
 
-/// `nyth mount`: checks `geteuid() == 0`, resolves the target's identity, provisions `/run/nyth/<name>/`, snapshots the target's real $HOME read-only, resolves watched-paths into `lower/`, and mounts the overlay over the target's $HOME
-pub fn run_mount(args: &MountArgs) -> Result<(), NythError> {
-    nix::unistd::geteuid()
-        .is_root()
-        .then_some(())
-        .ok_or(NythError::Identity(IdentityError::NotRunningAsRoot))?;
+/// `nyth mount`: checks `geteuid() == 0`, resolves the target's identity, provisions `/run/nyth/<name>/`, snapshots the target's real $HOME read-only, materializes home-files into `lower/`, and mounts the overlay over the target's $HOME
+pub fn run_mount(args: &MountArgs) -> eros::Result<()> {
+    ensure!(
+        nix::unistd::geteuid().is_root(),
+        "nyth must run as root: mount/unmount act on another user's $HOME and need CAP_SYS_ADMIN on the host, there is no user namespace to fall back to"
+    );
 
+    // `Err` is the passwd lookup itself failing, `Ok(None)` is it succeeding for a user that doesn't exist
     let identity = nix::unistd::User::from_name(&args.for_user)
-        .map_err(|err| {
-            NythError::Identity(IdentityError::HomeLookupFailed {
-                name: args.for_user.to_owned(),
-                errno: err,
-            })
-        })?
-        .ok_or(NythError::Identity(IdentityError::UserNotFound {
-            name: args.for_user.to_owned(),
-        }))?;
+        .with_context(|| format!("looking up the passwd entry for '{}'", args.for_user))?
+        .ok_or_else(|| eros::error!("no passwd entry found for user '{}'", args.for_user))?;
 
-    let already_mounted = current_overlay_state(&identity.dir).map_err(NythError::Overlay)?;
-    if already_mounted == OverlayState::Mounted {
-        return Err(NythError::Overlay(OverlayError::AlreadyMounted {
-            user: args.for_user.clone(),
-        }));
+    if current_overlay_state(&identity.dir)? == OverlayState::Mounted {
+        bail!("nyth is already mounted for user '{}'", args.for_user);
     }
 
     let paths = NythPaths::for_user(&args.for_user);
 
-    provision_persistent_tmpfs(&paths, identity.uid, identity.gid).map_err(NythError::Overlay)?;
-    mount_home_snapshot(&identity.dir, &paths).map_err(NythError::Overlay)?;
+    // One user-facing summary per step. The per-syscall detail underneath stays in
+    // `#[context]`, which is diagnostics-only, so a failure names the step that failed
+    // without unrolling the whole call tree at the user
+    provision_persistent_tmpfs(&paths, identity.uid, identity.gid)
+        .with_user_context(|| format!("provisioning {}", paths.root.display()))?;
+    mount_home_snapshot(&identity.dir, &paths)
+        .with_user_context(|| format!("snapshotting {}", identity.dir.display()))?;
     materialize_home_files(&paths, &args.home_files, identity.uid, identity.gid)
-        .map_err(NythError::Overlay)?;
+        .with_user_context(|| format!("materializing home-files from {}", args.home_files.display()))?;
 
     // upper/work are created by root; the target user's own processes running inside the overlay need to be able to write to them
-    set_ownership(&paths.upper, identity.uid, identity.gid).map_err(NythError::Overlay)?;
-    set_ownership(&paths.work, identity.uid, identity.gid).map_err(NythError::Overlay)?;
+    set_ownership(&paths.upper, identity.uid, identity.gid)
+        .with_user_context(|| format!("handing upper/work to '{}'", args.for_user))?;
+    set_ownership(&paths.work, identity.uid, identity.gid)
+        .with_user_context(|| format!("handing upper/work to '{}'", args.for_user))?;
 
-    mount_overlay(&paths, &identity.dir).map_err(NythError::Overlay)
+    mount_overlay(&paths, &identity.dir)
+        .with_user_context(|| format!("mounting the overlay over {}", identity.dir.display()))?;
+    Ok(())
 }

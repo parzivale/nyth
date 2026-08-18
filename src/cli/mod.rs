@@ -1,5 +1,8 @@
+use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::process::ExitCode;
+
+use eros::{AnyError, ErrorUnion};
 
 pub mod commit;
 pub mod generated_diff;
@@ -12,6 +15,40 @@ use generated_diff::{read_generated_change, render_generated_change};
 use mount::{parse_mount_args, run_mount};
 use status::{PendingChange, RepoArgs, parse_repo_args, status};
 use unmount::{parse_unmount_args, run_unmount};
+
+/// Honours the `NO_COLOR` convention, and stays plain when stderr is redirected
+/// somewhere that isn't a terminal (a log file, a Nix build sandbox, a pipe).
+fn use_color() -> bool {
+    std::env::var_os("NO_COLOR").is_none() && io::stderr().is_terminal()
+}
+
+/// Prints a failed run to stderr as a `Caused by:` chain.
+///
+/// `user_contexts()` is the only public accessor for context on an `ErrorUnion` —
+/// plain `.context()`/`#[context]` entries are reachable only through `Debug`. So the
+/// per-syscall trail stays out of the way here, and `{e:?}` still has it in full.
+///
+/// The root error is always the last link: nyth runs as root, and the errno is the
+/// actionable half of a failed mount. The context above it supplies the path it lacks.
+fn report(prefix: &str, e: &ErrorUnion<AnyError>) {
+    let (red, dim, off) = if use_color() {
+        ("\x1b[1;31m", "\x1b[2m", "\x1b[0m")
+    } else {
+        ("", "", "")
+    };
+
+    // eros pushes context as the error travels up, so the innermost sits first;
+    // a `Caused by:` chain reads the other way, outermost down to the root error
+    let mut causes: Vec<String> = e.user_contexts().map(ToString::to_string).collect();
+    causes.reverse();
+    causes.push(e.to_string());
+
+    eprintln!("{red}error{off}: {prefix}\n");
+    eprintln!("Caused by:");
+    for (i, cause) in causes.iter().enumerate() {
+        eprintln!("  {dim}{i}:{off} {cause}");
+    }
+}
 
 /// Dispatches on `args[1]` (the subcommand). `args[0]` is the program name,
 /// same convention as `std::env::args()`, so callers can pass that straight
@@ -48,7 +85,7 @@ fn run_mount_cmd(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("nyth mount failed: {e}");
+            report("nyth mount failed", &e);
             ExitCode::FAILURE
         }
     }
@@ -69,7 +106,7 @@ fn run_unmount_cmd(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("nyth unmount failed: {e}");
+            report("nyth unmount failed", &e);
             ExitCode::FAILURE
         }
     }
@@ -87,7 +124,7 @@ fn run_status(args: &[String]) -> ExitCode {
     let changes = match status(&repo_args) {
         Ok(changes) => changes,
         Err(e) => {
-            eprintln!("nyth status failed: {e}");
+            report("nyth status failed", &e);
             return ExitCode::FAILURE;
         }
     };
@@ -146,7 +183,7 @@ fn run_commit(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("nyth commit failed: {e}");
+            report("nyth commit failed", &e);
             ExitCode::FAILURE
         }
     }

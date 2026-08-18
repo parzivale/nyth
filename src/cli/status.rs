@@ -1,10 +1,11 @@
-use std::fmt;
 use std::fs;
+use std::io;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 
-use crate::config::{RelativeHomePath, RelativeHomePathError};
-use crate::error::{NythError, StatusError};
+use eros::{Context, bail};
+
+use crate::config::RelativeHomePath;
 use crate::sys::paths::NythPaths;
 
 /// A path that changed during a session: it exists in `upper` because overlayfs copied it up on write, or created it fresh
@@ -94,42 +95,8 @@ impl RepoArgs {
     }
 }
 
-#[derive(Debug)]
-pub enum RepoArgsError {
-    MissingFlagValue {
-        flag: &'static str,
-    },
-    MissingForUser,
-    InvalidWatchedPath {
-        flag: &'static str,
-        raw: String,
-        source: RelativeHomePathError,
-    },
-    UnexpectedArgument {
-        raw: String,
-    },
-}
-
-impl fmt::Display for RepoArgsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingFlagValue { flag } => write!(f, "{flag} requires a value"),
-            Self::MissingForUser => write!(f, "--for-user <name> is required"),
-            Self::InvalidWatchedPath { flag, raw, source } => {
-                write!(f, "invalid {flag} '{raw}': {source}")
-            }
-            Self::UnexpectedArgument { raw } => write!(
-                f,
-                "unexpected argument '{raw}', expected --for-user, --repo-root, --repo-backed, or --generated"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for RepoArgsError {}
-
 /// Parses `nyth status|commit --for-user <name> [--repo-root <path>] [--repo-backed <rel>]... [--generated <rel>]...`
-pub fn parse_repo_args(args: &[String]) -> Result<RepoArgs, RepoArgsError> {
+pub fn parse_repo_args(args: &[String]) -> eros::Result<RepoArgs> {
     let mut for_user = None;
     let mut parsed = RepoArgs::default();
     let mut remaining = args.iter();
@@ -137,15 +104,15 @@ pub fn parse_repo_args(args: &[String]) -> Result<RepoArgs, RepoArgsError> {
     while let Some(arg) = remaining.next() {
         match arg.as_str() {
             "--for-user" => {
-                let raw = remaining
-                    .next()
-                    .ok_or(RepoArgsError::MissingFlagValue { flag: "--for-user" })?;
+                let Some(raw) = remaining.next() else {
+                    bail!("--for-user requires a value");
+                };
                 for_user = Some(raw.clone());
             }
             "--repo-root" => {
-                let raw = remaining.next().ok_or(RepoArgsError::MissingFlagValue {
-                    flag: "--repo-root",
-                })?;
+                let Some(raw) = remaining.next() else {
+                    bail!("--repo-root requires a value");
+                };
                 parsed.repo_root = Some(PathBuf::from(raw));
             }
             "--repo-backed" => {
@@ -158,37 +125,38 @@ pub fn parse_repo_args(args: &[String]) -> Result<RepoArgs, RepoArgsError> {
                     .generated_paths
                     .push(parse_watched_path("--generated", &mut remaining)?);
             }
-            other => {
-                return Err(RepoArgsError::UnexpectedArgument {
-                    raw: other.to_string(),
-                });
-            }
+            other => bail!(
+                "unexpected argument '{}', expected --for-user, --repo-root, --repo-backed, or --generated",
+                other
+            ),
         }
     }
 
-    parsed.for_user = for_user.ok_or(RepoArgsError::MissingForUser)?;
+    let Some(for_user) = for_user else {
+        bail!("--for-user <name> is required");
+    };
+    parsed.for_user = for_user;
     Ok(parsed)
 }
 
 fn parse_watched_path(
     flag: &'static str,
     remaining: &mut std::slice::Iter<'_, String>,
-) -> Result<RelativeHomePath, RepoArgsError> {
-    let raw = remaining
-        .next()
-        .ok_or(RepoArgsError::MissingFlagValue { flag })?;
-    RelativeHomePath::new(raw.as_str()).map_err(|source| RepoArgsError::InvalidWatchedPath {
-        flag,
-        raw: raw.clone(),
-        source,
-    })
+) -> eros::Result<RelativeHomePath> {
+    let Some(raw) = remaining.next() else {
+        bail!("{} requires a value", flag);
+    };
+
+    // Folded into the message rather than attached as context: this is argv the user typed, and it reads back to them on one line
+    RelativeHomePath::new(raw.as_str())
+        .map_err(|e| eros::error!("invalid {} '{}': {}", flag, raw, e))
 }
 
 /// Builds identity-scoped paths from `--for-user`, then reports pending changes against `repo`
-pub fn status(args: &RepoArgs) -> Result<Vec<PendingChange>, NythError> {
+pub fn status(args: &RepoArgs) -> eros::Result<Vec<PendingChange>> {
     let paths = args.paths();
     let repo = args.clone().into_repo();
-    nyth_status(&paths, &repo).map_err(NythError::Status)
+    Ok(nyth_status(&paths, &repo)?)
 }
 
 /// Given what's already in `upper` and what the repo knows about, which changes are pending
@@ -206,32 +174,26 @@ pub fn diff_upper_against_repo(
 pub fn nyth_status(
     paths: &NythPaths,
     repo: &DotfilesRepo,
-) -> Result<Vec<PendingChange>, StatusError> {
+) -> eros::Result<Vec<PendingChange>, (io::Error,)> {
     let upper_entries = scan_upper_dir(&paths.upper)?;
     Ok(diff_upper_against_repo(&upper_entries, repo))
 }
 
-fn scan_upper_dir(upper_dir: &Path) -> Result<Vec<UpperEntry>, StatusError> {
+fn scan_upper_dir(upper_dir: &Path) -> eros::Result<Vec<UpperEntry>, (io::Error,)> {
     let mut entries = Vec::new();
     walk(upper_dir, upper_dir, &mut entries)?;
     Ok(entries)
 }
 
-fn walk(root: &Path, dir: &Path, out: &mut Vec<UpperEntry>) -> Result<(), StatusError> {
-    let read_dir = fs::read_dir(dir).map_err(|e| StatusError::ScanFailed {
-        path: dir.to_path_buf(),
-        message: e.to_string(),
-    })?;
+// No `#[context]`: this recurses, and the attribute would stack one context frame per level of directory depth
+fn walk(root: &Path, dir: &Path, out: &mut Vec<UpperEntry>) -> eros::Result<(), (io::Error,)> {
+    let read_dir = fs::read_dir(dir).with_user_context(|| format!("scanning {}", dir.display()))?;
 
     for entry in read_dir {
-        let entry = entry.map_err(|e| StatusError::ScanFailed {
-            path: dir.to_path_buf(),
-            message: e.to_string(),
-        })?;
-        let file_type = entry.file_type().map_err(|e| StatusError::ScanFailed {
-            path: entry.path(),
-            message: e.to_string(),
-        })?;
+        let entry = entry.with_user_context(|| format!("scanning {}", dir.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("reading the type of {}", entry.path().display()))?;
 
         if file_type.is_char_device() {
             continue;

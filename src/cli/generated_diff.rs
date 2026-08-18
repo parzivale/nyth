@@ -1,6 +1,8 @@
-use std::fmt;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+
+use eros::context;
 
 /// One line-level difference in a Generated config. Doesn't claim to know which Nix option a line maps to
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,29 +98,12 @@ fn pair_adjacent_replacements(ops: Vec<RawOp<'_>>) -> Vec<LineDiff> {
     out
 }
 
-#[derive(Debug)]
-pub enum GeneratedDiffError {
-    ReadFailed { path: PathBuf, message: String },
-}
-
-impl fmt::Display for GeneratedDiffError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ReadFailed { path, message } => {
-                write!(f, "couldn't read {}: {message}", path.display())
-            }
-        }
-    }
-}
-
-impl std::error::Error for GeneratedDiffError {}
-
 /// Effect: reads both files, diffs them
 pub fn read_generated_change(
     before_root: &Path,
     upper_root: &Path,
     relative_path: &Path,
-) -> Result<GeneratedChange, GeneratedDiffError> {
+) -> eros::Result<GeneratedChange, (io::Error,)> {
     let before = read_to_string_or_empty(&before_root.join(relative_path))?;
     let after = read_to_string_or_empty(&upper_root.join(relative_path))?;
 
@@ -129,14 +114,12 @@ pub fn read_generated_change(
 }
 
 // A missing file on one side is a real "every line added" diff, not a read error
-fn read_to_string_or_empty(path: &Path) -> Result<String, GeneratedDiffError> {
+#[context("reading {}", path.display())]
+fn read_to_string_or_empty(path: &Path) -> eros::Result<String, (io::Error,)> {
     match fs::read_to_string(path) {
         Ok(content) => Ok(content),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(GeneratedDiffError::ReadFailed {
-            path: path.to_path_buf(),
-            message: e.to_string(),
-        }),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e)?,
     }
 }
 

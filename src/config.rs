@@ -1,44 +1,26 @@
-use std::fmt;
 use std::path::{Component, Path, PathBuf};
+
+use eros::{ErrorUnion, StrError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelativeHomePath(PathBuf);
 
-#[derive(Debug)]
-pub enum RelativeHomePathError {
-    AbsolutePath(PathBuf),
-    EscapesHome(PathBuf),
-}
-
-impl fmt::Display for RelativeHomePathError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AbsolutePath(path) => write!(
-                f,
-                "target path {} must be relative to $HOME, not absolute",
-                path.display()
-            ),
-            Self::EscapesHome(path) => write!(
-                f,
-                "target path {} contains '..' and would escape $HOME",
-                path.display()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for RelativeHomePathError {}
-
 impl RelativeHomePath {
-    pub fn new(path: impl Into<PathBuf>) -> Result<Self, RelativeHomePathError> {
+    pub fn new(path: impl Into<PathBuf>) -> eros::Result<Self, (StrError,)> {
         let path = path.into();
 
         if path.is_absolute() {
-            return Err(RelativeHomePathError::AbsolutePath(path));
+            return Err(ErrorUnion::new(StrError::Owned(format!(
+                "target path {} must be relative to $HOME, not absolute",
+                path.display()
+            ))));
         }
 
         if path.components().any(|c| c == Component::ParentDir) {
-            return Err(RelativeHomePathError::EscapesHome(path));
+            return Err(ErrorUnion::new(StrError::Owned(format!(
+                "target path {} contains '..' and would escape $HOME",
+                path.display()
+            ))));
         }
 
         Ok(Self(path))

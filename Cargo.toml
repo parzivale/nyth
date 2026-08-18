@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+eros = { version = "0.7.0", features = ["user_context"] }
 nix = { version = "0.31.3", features = ["user"] }
 rustix = { version = "1", features = ["mount", "fs", "process"] }
 

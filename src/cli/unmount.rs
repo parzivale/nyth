@@ -1,6 +1,5 @@
-use std::fmt;
+use eros::{Context, bail, ensure};
 
-use crate::error::{IdentityError, NythError, OverlayError};
 use crate::sys::overlay::{
     OverlayState, current_overlay_state, unmount_overlay_and_snapshot, unmount_persistent_tmpfs,
 };
@@ -13,30 +12,8 @@ pub struct UnmountArgs {
     pub purge: bool,
 }
 
-#[derive(Debug)]
-pub enum UnmountArgsError {
-    MissingFlagValue { flag: &'static str },
-    MissingForUser,
-    UnexpectedArgument { raw: String },
-}
-
-impl fmt::Display for UnmountArgsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingFlagValue { flag } => write!(f, "{flag} requires a value"),
-            Self::MissingForUser => write!(f, "--for-user <name> is required"),
-            Self::UnexpectedArgument { raw } => write!(
-                f,
-                "unexpected argument '{raw}', expected --for-user or --purge"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for UnmountArgsError {}
-
 /// Parses `nyth unmount --for-user <name> [--purge]`
-pub fn parse_unmount_args(args: &[String]) -> Result<UnmountArgs, UnmountArgsError> {
+pub fn parse_unmount_args(args: &[String]) -> eros::Result<UnmountArgs> {
     let mut for_user = None;
     let mut purge = false;
     let mut remaining = args.iter();
@@ -44,58 +21,51 @@ pub fn parse_unmount_args(args: &[String]) -> Result<UnmountArgs, UnmountArgsErr
     while let Some(arg) = remaining.next() {
         match arg.as_str() {
             "--for-user" => {
-                let raw = remaining
-                    .next()
-                    .ok_or(UnmountArgsError::MissingFlagValue { flag: "--for-user" })?;
+                let Some(raw) = remaining.next() else {
+                    bail!("--for-user requires a value");
+                };
                 for_user = Some(raw.clone());
             }
             "--purge" => purge = true,
-            other => {
-                return Err(UnmountArgsError::UnexpectedArgument {
-                    raw: other.to_string(),
-                });
-            }
+            other => bail!(
+                "unexpected argument '{}', expected --for-user or --purge",
+                other
+            ),
         }
     }
 
-    Ok(UnmountArgs {
-        for_user: for_user.ok_or(UnmountArgsError::MissingForUser)?,
-        purge,
-    })
+    let Some(for_user) = for_user else {
+        bail!("--for-user <name> is required");
+    };
+
+    Ok(UnmountArgs { for_user, purge })
 }
 
 /// `nyth unmount`: unmounts the overlay and the read-only home snapshot for the target user.
 /// `upper`/`work` are left in place unless `--purge` is given
-pub fn run_unmount(args: &UnmountArgs) -> Result<(), NythError> {
-    nix::unistd::geteuid()
-        .is_root()
-        .then_some(())
-        .ok_or(NythError::Identity(IdentityError::NotRunningAsRoot))?;
+pub fn run_unmount(args: &UnmountArgs) -> eros::Result<()> {
+    ensure!(
+        nix::unistd::geteuid().is_root(),
+        "nyth must run as root: mount/unmount act on another user's $HOME and need CAP_SYS_ADMIN on the host, there is no user namespace to fall back to"
+    );
 
+    // `Err` is the passwd lookup itself failing, `Ok(None)` is it succeeding for a user that doesn't exist
     let identity = nix::unistd::User::from_name(&args.for_user)
-        .map_err(|err| {
-            NythError::Identity(IdentityError::HomeLookupFailed {
-                name: args.for_user.to_owned(),
-                errno: err,
-            })
-        })?
-        .ok_or(NythError::Identity(IdentityError::UserNotFound {
-            name: args.for_user.to_owned(),
-        }))?;
+        .with_context(|| format!("looking up the passwd entry for '{}'", args.for_user))?
+        .ok_or_else(|| eros::error!("no passwd entry found for user '{}'", args.for_user))?;
 
-    let state = current_overlay_state(&identity.dir).map_err(NythError::Overlay)?;
-    if state == OverlayState::NotMounted {
-        return Err(NythError::Overlay(OverlayError::NotMounted {
-            user: args.for_user.clone(),
-        }));
+    if current_overlay_state(&identity.dir)? == OverlayState::NotMounted {
+        bail!("nyth is not mounted for user '{}'", args.for_user);
     }
 
     let paths = NythPaths::for_user(&args.for_user);
 
-    unmount_overlay_and_snapshot(&identity.dir, &paths).map_err(NythError::Overlay)?;
+    unmount_overlay_and_snapshot(&identity.dir, &paths)
+        .with_user_context(|| format!("unmounting the overlay over {}", identity.dir.display()))?;
 
     if args.purge {
-        unmount_persistent_tmpfs(&paths).map_err(NythError::Overlay)?;
+        unmount_persistent_tmpfs(&paths)
+            .with_user_context(|| format!("purging {}", paths.root.display()))?;
     }
 
     Ok(())

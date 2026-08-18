@@ -1,8 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::fmt;
+use std::io;
+use std::path::PathBuf;
+
+use eros::{Context, ErrorUnion, ReshapeUnion};
 
 use crate::cli::status::{DotfilesRepo, PendingChange, RepoArgs, nyth_status};
 use crate::config::RelativeHomePath;
-use crate::error::{NotCommittableReason, NythError};
 use crate::sys::paths::NythPaths;
 
 /// Which pending changes `nyth commit` should actually write back to the repo
@@ -17,6 +20,36 @@ pub struct CommitReport {
     /// Repo paths that got written, in the order they were applied
     pub applied: Vec<PathBuf>,
 }
+
+/// A change that was refused outright, as opposed to one that failed while being applied.
+/// Carries the path and the reason itself, so callers that `narrow()` it back out of
+/// `apply_commit` have the whole story without any attached context.
+#[derive(Debug)]
+pub enum NotCommittable {
+    /// Rendered by a `programs.*` module from Nix options; no source file in the repo to write to
+    Generated { path: PathBuf },
+    /// Not managed by Home Manager at all
+    Untracked { path: PathBuf },
+}
+
+impl fmt::Display for NotCommittable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Generated { path } => write!(
+                f,
+                "{} is rendered by a programs.* module, not backed by a repo file — nothing to commit it to",
+                path.display()
+            ),
+            Self::Untracked { path } => write!(
+                f,
+                "{} is not managed by Home Manager, cannot commit an untracked path",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NotCommittable {}
 
 /// Which pending changes match `selection`. `Untracked` changes are never selected, regardless of the filter
 pub fn select_changes_to_apply(
@@ -41,25 +74,29 @@ pub fn select_changes_to_apply(
 
 /// Builds identity-scoped paths and the repo from `--for-user`/`--repo-*` args, then commits
 /// Thin wrapper around `commit_into`.
-pub fn commit(args: &RepoArgs) -> Result<CommitReport, NythError> {
+pub fn commit(args: &RepoArgs) -> eros::Result<CommitReport> {
     let paths = args.paths();
     let repo = args.clone().into_repo();
     commit_into(&repo, &paths)
 }
 
-pub fn commit_into(repo: &DotfilesRepo, paths: &NythPaths) -> Result<CommitReport, NythError> {
-    let pending = nyth_status(paths, repo).map_err(NythError::Status)?;
+pub fn commit_into(repo: &DotfilesRepo, paths: &NythPaths) -> eros::Result<CommitReport> {
+    let pending = nyth_status(paths, repo)?;
     let selected = select_changes_to_apply(&pending, &CommitSelection::All);
 
-    apply_commit(&selected, paths, repo)
+    Ok(apply_commit(&selected, paths, repo)?)
 }
 
 /// Writes each already-selected change back to the repo, at the same $HOME-relative path it changed at: the repo mirrors $HOME under `repo.root`
+///
+/// `NotCommittable` stays a separate arm of the union rather than being erased, because
+/// callers that pass an unfiltered list (`select_changes_to_apply` filters these out) can
+/// `narrow()` it out and skip those paths instead of failing the whole run.
 pub fn apply_commit(
     selected: &[PendingChange],
     paths: &NythPaths,
     repo: &DotfilesRepo,
-) -> Result<CommitReport, NythError> {
+) -> eros::Result<CommitReport, (NotCommittable, io::Error)> {
     let mut applied = Vec::with_capacity(selected.len());
 
     for change in selected {
@@ -73,40 +110,26 @@ fn apply_one_change(
     paths: &NythPaths,
     repo: &DotfilesRepo,
     change: &PendingChange,
-) -> Result<PathBuf, NythError> {
+) -> eros::Result<PathBuf, (NotCommittable, io::Error)> {
     let relative_path = match change {
         PendingChange::RepoBacked { relative_path } => relative_path,
         PendingChange::Generated { relative_path } => {
-            return Err(NythError::NotCommittable {
+            return Err(ErrorUnion::new(NotCommittable::Generated {
                 path: relative_path.clone(),
-                reason: NotCommittableReason::Generated,
-            });
+            }));
         }
         PendingChange::Untracked { relative_path } => {
-            return Err(NythError::NotCommittable {
+            return Err(ErrorUnion::new(NotCommittable::Untracked {
                 path: relative_path.clone(),
-                reason: NotCommittableReason::Untracked,
-            });
+            }));
         }
     };
 
     let source_in_upper = paths.upper.join(relative_path);
     let destination = repo.root.join(relative_path);
 
-    copy_one(&source_in_upper, &destination)?;
+    crate::fs_util::copy_file_preserving_symlinks(&source_in_upper, &destination)
+        .with_user_context(|| format!("committing {}", destination.display()))
+        .widen()?;
     Ok(destination)
-}
-
-// Same symlink-preserving copy fs_util provides everywhere else in the crate,
-// just wraps the io::Error into this module's own error variant.
-fn copy_one(source: &Path, destination: &Path) -> Result<(), NythError> {
-    crate::fs_util::copy_file_preserving_symlinks(source, destination)
-        .map_err(|e| commit_io_failed(destination, &e))
-}
-
-fn commit_io_failed(path: &Path, e: &std::io::Error) -> NythError {
-    NythError::CommitIoFailed {
-        path: path.to_path_buf(),
-        message: e.to_string(),
-    }
 }

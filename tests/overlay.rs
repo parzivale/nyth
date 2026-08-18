@@ -6,8 +6,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, symlink};
 use std::path::Path;
 
-use nix::errno::Errno;
-use nyth::error::OverlayError;
+use eros::{ErrorUnion, TypeSet};
 use nyth::sys::overlay::{
     materialize_home_files, mount_overlay, provision_persistent_tmpfs, unmount_persistent_tmpfs,
 };
@@ -17,9 +16,17 @@ use nyth::sys::paths::NythPaths;
 const FAKE_TARGET_UID: nix::unistd::Uid = nix::unistd::Uid::from_raw(6553);
 const FAKE_TARGET_GID: nix::unistd::Gid = nix::unistd::Gid::from_raw(6553);
 
-/// EPERM/EACCES on the very first root-only step (creating/mounting `/run/nyth/<name>`) means this process isn't running as real root - expected outside a CI container running as root
-fn is_permission_denied(errno: Errno) -> bool {
-    errno == Errno::EPERM || errno == Errno::EACCES
+/// EPERM/EACCES on the very first root-only step (creating/mounting `/run/nyth/<name>`) means this process isn't running as real root - expected outside a CI container running as root.
+///
+/// The step can fail as either a `std::io::Error` (the mkdir) or a rustix errno
+/// (the mount), so both arms of the union get checked rather than one.
+fn is_permission_denied<E: TypeSet>(e: &ErrorUnion<E>) -> bool {
+    e.downcast_inner_ref::<rustix::io::Errno>()
+        .is_some_and(|errno| {
+            *errno == rustix::io::Errno::PERM || *errno == rustix::io::Errno::ACCESS
+        })
+        || e.downcast_inner_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::PermissionDenied)
 }
 
 fn umount_path(path: &Path) {
@@ -39,9 +46,7 @@ fn run_in_child() -> i32 {
     let paths = NythPaths::for_user(&name);
 
     if let Err(e) = provision_persistent_tmpfs(&paths, FAKE_TARGET_UID, FAKE_TARGET_GID) {
-        if let OverlayError::PersistentTmpfsFailed { errno } = e
-            && is_permission_denied(errno)
-        {
+        if is_permission_denied(&e) {
             return 0;
         }
         eprintln!("provision_persistent_tmpfs failed: {e:?}");
@@ -140,9 +145,7 @@ fn run_materialize_in_child() -> i32 {
     let paths = NythPaths::for_user(&name);
 
     if let Err(e) = provision_persistent_tmpfs(&paths, FAKE_TARGET_UID, FAKE_TARGET_GID) {
-        if let OverlayError::PersistentTmpfsFailed { errno } = e
-            && is_permission_denied(errno)
-        {
+        if is_permission_denied(&e) {
             return 0;
         }
         eprintln!("provision_persistent_tmpfs failed: {e:?}");
