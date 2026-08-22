@@ -76,7 +76,7 @@ let
 in
 {
   options.programs.nyth = {
-    enable = lib.mkEnableOption "write-through OverlayFS over the Home Manager-managed $HOME";
+    enable = lib.mkEnableOption "writable OverlayFS over the Home Manager-managed $HOME (changes remain in upper and work directories until nyth commit persists them)";
 
     package = lib.mkOption {
       type = lib.types.package;
