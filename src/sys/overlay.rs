@@ -54,12 +54,36 @@ pub fn current_overlay_state(home: &Path) -> eros::Result<OverlayState, (io::Err
         let line = line?;
         // mountinfo(5): "... mount_id parent_id major:minor root mount_point ..."
         if let Some(mount_point) = line.split_whitespace().nth(4)
-            && Path::new(mount_point) == home
+            && Path::new(&decode_mountinfo_field(mount_point)) == home
         {
             return Ok(OverlayState::Mounted);
         }
     }
     Ok(OverlayState::NotMounted)
+}
+
+fn decode_mountinfo_field(escaped: &str) -> OsString {
+    let bytes = escaped.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && (b'0'..=b'7').contains(&bytes[i + 1])
+            && (b'0'..=b'7').contains(&bytes[i + 2])
+            && (b'0'..=b'7').contains(&bytes[i + 3])
+        {
+            let v = ((bytes[i + 1] - b'0') << 6)
+                | ((bytes[i + 2] - b'0') << 3)
+                | (bytes[i + 3] - b'0');
+            decoded.push(v);
+            i += 4;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+    OsString::from_vec(decoded)
 }
 
 /// Sets up `/run/nyth/<name>/` as a persistent tmpfs owned by the target user, with its 4 subdirs
