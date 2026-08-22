@@ -281,8 +281,9 @@ pub fn unmount_overlay_and_snapshot(
     target: &Path,
     paths: &NythPaths,
 ) -> eros::Result<(), (Errno,)> {
-    unmount_one(target)?;
-    unmount_one(&paths.home_snapshot)
+    let first = unmount_one(target);
+    let second = unmount_one(&paths.home_snapshot);
+    first.and(second)
 }
 
 /// Additionally tears down the persistent tmpfs itself (`nyth unmount --purge`): `upper`/`work` go with it
