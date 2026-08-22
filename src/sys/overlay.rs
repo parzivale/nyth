@@ -114,7 +114,7 @@ fn mount_tmpfs(path: &Path) -> eros::Result<(), (Errno,)> {
         path,
         "tmpfs",
         MountFlags::NOSUID | MountFlags::NODEV,
-        None::<&CStr>,
+        Some(c"mode=0700"),
     )?;
     Ok(())
 }
