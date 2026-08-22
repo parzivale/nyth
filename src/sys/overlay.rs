@@ -140,10 +140,10 @@ fn bind_mount(source: &Path, target: &Path) -> Result<(), Errno> {
 // Two-step bind+remount (MS_RDONLY ignored on initial MS_BIND).
 // Flags repeated on both calls, or a locked host mount (e.g. /tmp nosuid) gets EPERM.
 fn remount_readonly(target: &Path) -> Result<(), Errno> {
-    // mount_remount adds MS_REMOUNT itself, leaving MS_BIND | MS_NOSUID | MS_NODEV here
+    // mount_remount adds MS_REMOUNT itself, leaving MS_BIND | MS_RDONLY | MS_NOSUID | MS_NODEV here
     mount_remount(
         target,
-        MountFlags::BIND | MountFlags::NOSUID | MountFlags::NODEV,
+        MountFlags::BIND | MountFlags::RDONLY | MountFlags::NOSUID | MountFlags::NODEV,
         "",
     )
 }
